@@ -9,6 +9,8 @@ let queue = [];
 
 // --- Start Chrome inside Railway ---
 async function startBrowser() {
+    console.log("[BRIDGE] Launching Chromium...");
+
     browser = await puppeteer.launch({
         headless: "new",
         args: [
@@ -20,57 +22,78 @@ async function startBrowser() {
         ]
     });
 
-    page = await browser.newPage();
+    console.log("[BRIDGE] Chromium launched");
 
-    // Open WS inside the browser context
+    page = await browser.newPage();
+    console.log("[BRIDGE] New page created");
+
+    // Expose function so Chrome can push packets to Node
     await page.exposeFunction("bridgeRecv", (msg) => {
-        queue.push(Buffer.from(msg).toString("base64"));
+        const b64 = Buffer.from(msg).toString("base64");
+        queue.push(b64);
+        console.log("[BRIDGE] Packet received from Eaglercraft (Chrome WS) | bytes:", msg.byteLength, "| queue size:", queue.length);
     });
 
+    // Open WebSocket inside Chrome
     await page.evaluate(() => {
+        console.log("[BRIDGE] Opening WebSocket inside Chrome...");
         window.ws = new WebSocket("wss://eaglercraft.cc");
         window.ws.binaryType = "arraybuffer";
 
         window.ws.onopen = () => {
-            console.log("Browser WS connected");
+            console.log("[BRIDGE] Chrome WS connected to Eaglercraft");
         };
 
         window.ws.onmessage = (ev) => {
+            console.log("[BRIDGE] Chrome WS incoming packet | bytes:", ev.data.byteLength);
             window.bridgeRecv(ev.data);
         };
 
-        window.ws.onclose = () => {
-            console.log("Browser WS closed");
+        window.ws.onclose = (ev) => {
+            console.log("[BRIDGE] Chrome WS closed | code:", ev.code);
         };
 
         window.ws.onerror = (err) => {
-            console.log("Browser WS error", err);
+            console.log("[BRIDGE] Chrome WS error:", err);
         };
     });
 
-    console.log("Chrome WebSocket tunnel ready");
+    console.log("[BRIDGE] Chrome WebSocket tunnel ready");
 }
 
 startBrowser();
 
 // --- Browser → send → Eaglercraft ---
 app.post("/send", async (req, res) => {
-    const buf = Buffer.from(req.body, "base64");
+    console.log("[BRIDGE] /send hit | base64 length:", req.body.length);
 
-    await page.evaluate((data) => {
-        window.ws.send(new Uint8Array(data));
-    }, buf);
+    try {
+        const buf = Buffer.from(req.body, "base64");
+        console.log("[BRIDGE] Decoded /send packet | bytes:", buf.length);
+
+        await page.evaluate((data) => {
+            console.log("[BRIDGE] Sending packet from Node → Chrome WS | bytes:", data.length);
+            window.ws.send(new Uint8Array(data));
+        }, buf);
+
+    } catch (e) {
+        console.log("[BRIDGE] ERROR in /send:", e.message);
+    }
 
     res.send("ok");
 });
 
 // --- Browser → recv → Eaglercraft ---
 app.get("/recv", (req, res) => {
+    console.log("[BRIDGE] /recv polled | queue size:", queue.length);
+
     if (queue.length > 0) {
-        res.send(queue.shift());
+        const msg = queue.shift();
+        console.log("[BRIDGE] Delivering packet to client | base64 bytes:", msg.length, "| new queue size:", queue.length);
+        res.send(msg);
     } else {
         res.send("");
     }
 });
 
-app.listen(3000, () => console.log("Bridge running on port 3000"));
+app.listen(3000, () => console.log("[BRIDGE] Bridge running on port 3000"));
