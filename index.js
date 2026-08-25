@@ -7,6 +7,7 @@ app.use(express.text({ type: "*/*" }));
 let ws = null;
 let queue = [];
 
+// --- Connect to Eaglercraft ---
 function connect() {
     ws = new WebSocket("wss://eaglercraft.cc", {
         headers: {
@@ -14,7 +15,6 @@ function connect() {
             "Origin": "https://eaglercraft.com",
             "Cache-Control": "no-cache",
             "Pragma": "no-cache",
-            "Upgrade": "websocket",
             "Sec-WebSocket-Version": "13",
             "Sec-WebSocket-Extensions": "permessage-deflate"
         }
@@ -24,6 +24,10 @@ function connect() {
 
     ws.on("open", () => {
         console.log("WS connected to Eaglercraft");
+
+        // Minimal binary "hello" frame to keep connection alive
+        const hello = Buffer.from([0x00]);
+        ws.send(hello);
     });
 
     ws.on("message", (msg) => {
@@ -43,19 +47,26 @@ function connect() {
 
 connect();
 
+// --- Browser → send → Eaglercraft (base64 → binary) ---
 app.post("/send", (req, res) => {
     try {
         const buf = Buffer.from(req.body, "base64");
-        if (ws.readyState === WebSocket.OPEN) ws.send(buf);
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(buf);
+        }
     } catch (e) {
         console.log("Send error:", e.message);
     }
     res.send("ok");
 });
 
+// --- Browser → recv → Eaglercraft (binary → base64) ---
 app.get("/recv", (req, res) => {
-    if (queue.length > 0) res.send(queue.shift());
-    else res.send("");
+    if (queue.length > 0) {
+        res.send(queue.shift());
+    } else {
+        res.send("");
+    }
 });
 
 app.listen(3000, () => console.log("Bridge running on port 3000"));
