@@ -1,66 +1,70 @@
 import express from "express";
-import WebSocket from "ws";
+import puppeteer from "puppeteer";
 
 const app = express();
 app.use(express.text({ type: "*/*" }));
 
-let ws = null;
+let browser, page;
 let queue = [];
 
-// --- Connect to Eaglercraft ---
-function connect() {
-    ws = new WebSocket("wss://eaglercraft.cc", {
-        headers: {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-            "Origin": "https://eaglercraft.com",
-            "Cache-Control": "no-cache",
-            "Pragma": "no-cache",
-            "Sec-WebSocket-Version": "13",
-            "Sec-WebSocket-Extensions": "permessage-deflate"
-        }
+// --- Start Chrome inside Railway ---
+async function startBrowser() {
+    browser = await puppeteer.launch({
+        headless: "new",
+        args: [
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--disable-software-rasterizer"
+        ]
     });
 
-    ws.binaryType = "arraybuffer";
+    page = await browser.newPage();
 
-    ws.on("open", () => {
-        console.log("WS connected to Eaglercraft");
-
-        // Minimal binary "hello" frame to keep connection alive
-        const hello = Buffer.from([0x00]);
-        ws.send(hello);
+    // Open WS inside the browser context
+    await page.exposeFunction("bridgeRecv", (msg) => {
+        queue.push(Buffer.from(msg).toString("base64"));
     });
 
-    ws.on("message", (msg) => {
-        const b64 = Buffer.from(msg).toString("base64");
-        queue.push(b64);
+    await page.evaluate(() => {
+        window.ws = new WebSocket("wss://eaglercraft.cc");
+        window.ws.binaryType = "arraybuffer";
+
+        window.ws.onopen = () => {
+            console.log("Browser WS connected");
+        };
+
+        window.ws.onmessage = (ev) => {
+            window.bridgeRecv(ev.data);
+        };
+
+        window.ws.onclose = () => {
+            console.log("Browser WS closed");
+        };
+
+        window.ws.onerror = (err) => {
+            console.log("Browser WS error", err);
+        };
     });
 
-    ws.on("close", (code, reason) => {
-        console.log(`WS closed (${code}) ${reason}`);
-        setTimeout(connect, 1000);
-    });
-
-    ws.on("error", (err) => {
-        console.log("WS error:", err.message);
-    });
+    console.log("Chrome WebSocket tunnel ready");
 }
 
-connect();
+startBrowser();
 
-// --- Browser → send → Eaglercraft (base64 → binary) ---
-app.post("/send", (req, res) => {
-    try {
-        const buf = Buffer.from(req.body, "base64");
-        if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(buf);
-        }
-    } catch (e) {
-        console.log("Send error:", e.message);
-    }
+// --- Browser → send → Eaglercraft ---
+app.post("/send", async (req, res) => {
+    const buf = Buffer.from(req.body, "base64");
+
+    await page.evaluate((data) => {
+        window.ws.send(new Uint8Array(data));
+    }, buf);
+
     res.send("ok");
 });
 
-// --- Browser → recv → Eaglercraft (binary → base64) ---
+// --- Browser → recv → Eaglercraft ---
 app.get("/recv", (req, res) => {
     if (queue.length > 0) {
         res.send(queue.shift());
