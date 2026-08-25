@@ -7,9 +7,18 @@ app.use(express.text({ type: "*/*" }));
 let ws = null;
 let queue = [];
 
-// --- Connect to Eaglercraft with NO subprotocols ---
 function connect() {
-    ws = new WebSocket("wss://eaglercraft.cc");  // <-- IMPORTANT
+    ws = new WebSocket("wss://eaglercraft.cc", {
+        headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "Origin": "https://eaglercraft.com",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "Upgrade": "websocket",
+            "Sec-WebSocket-Version": "13",
+            "Sec-WebSocket-Extensions": "permessage-deflate"
+        }
+    });
 
     ws.binaryType = "arraybuffer";
 
@@ -34,26 +43,19 @@ function connect() {
 
 connect();
 
-// --- Browser → send → Eaglercraft ---
 app.post("/send", (req, res) => {
     try {
         const buf = Buffer.from(req.body, "base64");
-        if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(buf);
-        }
+        if (ws.readyState === WebSocket.OPEN) ws.send(buf);
     } catch (e) {
         console.log("Send error:", e.message);
     }
     res.send("ok");
 });
 
-// --- Browser → recv ---
 app.get("/recv", (req, res) => {
-    if (queue.length > 0) {
-        res.send(queue.shift());
-    } else {
-        res.send("");
-    }
+    if (queue.length > 0) res.send(queue.shift());
+    else res.send("");
 });
 
 app.listen(3000, () => console.log("Bridge running on port 3000"));
