@@ -18,7 +18,8 @@ async function startBrowser() {
             "--disable-setuid-sandbox",
             "--disable-dev-shm-usage",
             "--disable-gpu",
-            "--disable-software-rasterizer"
+            "--disable-software-rasterizer",
+            "--disable-web-security"   // ⭐ REQUIRED ⭐
         ]
     });
 
@@ -56,6 +57,7 @@ async function startBrowser() {
 
         window.ws.onmessage = (ev) => {
             const arr = new Uint8Array(ev.data);
+            console.log("[CHROME] Incoming from server | bytes:", arr.length);
             window.bridgeRecv([...arr]);  // Puppeteer-safe serialization
         };
 
