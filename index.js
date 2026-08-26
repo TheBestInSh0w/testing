@@ -28,13 +28,16 @@ async function startBrowser() {
     console.log("[BRIDGE] New page created");
 
     // Expose function so Chrome can push packets to Node
-    await page.exposeFunction("bridgeRecv", (msg) => {
-        const arr = new Uint8Array(msg);
-        let b64 = "";
+    await page.exposeFunction("bridgeRecv", (msgArray) => {
+        // msgArray is a normal JS array from Chrome
+        const arr = Uint8Array.from(msgArray);
+
+        // Convert binary → base64 safely
+        let bin = "";
         for (let i = 0; i < arr.length; i++) {
-            b64 += String.fromCharCode(arr[i]);
+            bin += String.fromCharCode(arr[i]);
         }
-        b64 = Buffer.from(b64, "binary").toString("base64");
+        const b64 = Buffer.from(bin, "binary").toString("base64");
 
         queue.push(b64);
         console.log("[BRIDGE] Packet received from Chrome | bytes:", arr.length);
@@ -52,7 +55,8 @@ async function startBrowser() {
 
         window.ws.onmessage = (ev) => {
             const arr = new Uint8Array(ev.data);
-            window.bridgeRecv(arr);
+            // Convert Uint8Array → normal array for Puppeteer
+            window.bridgeRecv([...arr]);
         };
 
         window.ws.onclose = (ev) => {
@@ -79,7 +83,7 @@ app.post("/send", async (req, res) => {
 
         await page.evaluate((data) => {
             window.ws.send(new Uint8Array(data));
-        }, arr);
+        }, [...arr]); // send as normal array so Puppeteer serializes correctly
 
     } catch (e) {
         console.log("[BRIDGE] ERROR in /send:", e.message);
