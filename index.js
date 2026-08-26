@@ -4,10 +4,22 @@ import puppeteer from "puppeteer";
 const app = express();
 app.use(express.text({ type: "*/*" }));
 
+// -------------------------------
+// CORS FIX (required for browser loader)
+// -------------------------------
+app.use((req, res, next) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    next();
+});
+
 let browser, page;
 let queue = [];
 
-// --- Start Chrome inside Railway ---
+// -------------------------------
+// Launch Chromium
+// -------------------------------
 async function startBrowser() {
     console.log("[BRIDGE] Launching Chromium...");
 
@@ -28,7 +40,7 @@ async function startBrowser() {
     page = await browser.newPage();
     console.log("[BRIDGE] New page created");
 
-    // Expose function so Chrome can push packets to Node
+    // Allow Chrome to send packets back to Node
     await page.exposeFunction("bridgeRecv", (msgArray) => {
         const arr = Uint8Array.from(msgArray);
 
@@ -42,31 +54,29 @@ async function startBrowser() {
         console.log("[BRIDGE] Packet received from Chrome | bytes:", arr.length);
     });
 
-    // Open WebSocket inside Chrome WITH REQUIRED PROTOCOL
+    // Open WebSocket inside Chrome
     await page.evaluate(() => {
         console.log("[BRIDGE] Opening WebSocket inside Chrome...");
 
-        // ⭐ REQUIRED FOR EAGLERCRAFT 1.12.2 ⭐
         window.ws = new WebSocket("wss://eaglercraft.cc", "eaglercraftX");
-
         window.ws.binaryType = "arraybuffer";
 
         window.ws.onopen = () => {
-            console.log("[BRIDGE] Chrome WS connected to Eaglercraft");
+            console.log("[CHROME] WS connected to Eaglercraft");
         };
 
         window.ws.onmessage = (ev) => {
             const arr = new Uint8Array(ev.data);
             console.log("[CHROME] Incoming from server | bytes:", arr.length);
-            window.bridgeRecv([...arr]);  // Puppeteer-safe serialization
+            window.bridgeRecv([...arr]);
         };
 
         window.ws.onclose = (ev) => {
-            console.log("[BRIDGE] Chrome WS closed | code:", ev.code);
+            console.log("[CHROME] WS closed | code:", ev.code);
         };
 
         window.ws.onerror = (err) => {
-            console.log("[BRIDGE] Chrome WS error:", err);
+            console.log("[CHROME] WS error:", err);
         };
     });
 
@@ -75,7 +85,9 @@ async function startBrowser() {
 
 startBrowser();
 
-// --- Browser → send → Eaglercraft ---
+// -------------------------------
+// Browser → send → Eaglercraft
+// -------------------------------
 app.post("/send", async (req, res) => {
     try {
         const raw = Buffer.from(req.body, "base64");
@@ -85,7 +97,8 @@ app.post("/send", async (req, res) => {
 
         await page.evaluate((data) => {
             window.ws.send(new Uint8Array(data));
-        }, [...arr]); // Puppeteer-safe
+        }, [...arr]);
+
     } catch (e) {
         console.log("[BRIDGE] ERROR in /send:", e.message);
     }
@@ -93,7 +106,9 @@ app.post("/send", async (req, res) => {
     res.send("ok");
 });
 
-// --- Browser → recv → Eaglercraft ---
+// -------------------------------
+// Browser → recv → Eaglercraft
+// -------------------------------
 app.get("/recv", (req, res) => {
     if (queue.length > 0) {
         const msg = queue.shift();
@@ -103,4 +118,7 @@ app.get("/recv", (req, res) => {
     }
 });
 
+// -------------------------------
+// Start server
+// -------------------------------
 app.listen(3000, () => console.log("[BRIDGE] Bridge running on port 3000"));
