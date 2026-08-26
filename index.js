@@ -29,9 +29,15 @@ async function startBrowser() {
 
     // Expose function so Chrome can push packets to Node
     await page.exposeFunction("bridgeRecv", (msg) => {
-        const b64 = Buffer.from(msg).toString("base64");
+        const arr = new Uint8Array(msg);
+        let b64 = "";
+        for (let i = 0; i < arr.length; i++) {
+            b64 += String.fromCharCode(arr[i]);
+        }
+        b64 = Buffer.from(b64, "binary").toString("base64");
+
         queue.push(b64);
-        console.log("[BRIDGE] Packet received from Eaglercraft (Chrome WS) | bytes:", msg.byteLength, "| queue size:", queue.length);
+        console.log("[BRIDGE] Packet received from Chrome | bytes:", arr.length);
     });
 
     // Open WebSocket inside Chrome
@@ -45,8 +51,8 @@ async function startBrowser() {
         };
 
         window.ws.onmessage = (ev) => {
-            console.log("[BRIDGE] Chrome WS incoming packet | bytes:", ev.data.byteLength);
-            window.bridgeRecv(ev.data);
+            const arr = new Uint8Array(ev.data);
+            window.bridgeRecv(arr);
         };
 
         window.ws.onclose = (ev) => {
@@ -65,16 +71,15 @@ startBrowser();
 
 // --- Browser → send → Eaglercraft ---
 app.post("/send", async (req, res) => {
-    console.log("[BRIDGE] /send hit | base64 length:", req.body.length);
-
     try {
-        const buf = Buffer.from(req.body, "base64");
-        console.log("[BRIDGE] Decoded /send packet | bytes:", buf.length);
+        const raw = Buffer.from(req.body, "base64");
+        const arr = new Uint8Array(raw);
+
+        console.log("[BRIDGE] /send packet | bytes:", arr.length);
 
         await page.evaluate((data) => {
-            console.log("[BRIDGE] Sending packet from Node → Chrome WS | bytes:", data.length);
             window.ws.send(new Uint8Array(data));
-        }, buf);
+        }, arr);
 
     } catch (e) {
         console.log("[BRIDGE] ERROR in /send:", e.message);
@@ -85,11 +90,8 @@ app.post("/send", async (req, res) => {
 
 // --- Browser → recv → Eaglercraft ---
 app.get("/recv", (req, res) => {
-    console.log("[BRIDGE] /recv polled | queue size:", queue.length);
-
     if (queue.length > 0) {
         const msg = queue.shift();
-        console.log("[BRIDGE] Delivering packet to client | base64 bytes:", msg.length, "| new queue size:", queue.length);
         res.send(msg);
     } else {
         res.send("");
