@@ -1,50 +1,58 @@
 import express from "express";
-import WebSocket from "ws";
+import puppeteer from "puppeteer";
 
 const app = express();
-
-// accept raw text (base64) from loader
 app.use(express.text({ type: "*/*" }));
 
 // -------------------------------
-// CORS (for browser loader)
+// CORS (required for browser loader)
 // -------------------------------
 app.use((req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-    if (req.method === "OPTIONS") {
-        return res.sendStatus(200);
-    }
+    if (req.method === "OPTIONS") return res.sendStatus(200);
     next();
 });
 
-let ws;
+let browser, page;
 let queue = [];
 
 // -------------------------------
-// Connect to wss://eaglercraft.cc
+// Launch Chromium (stable flags)
 // -------------------------------
-function connectWS() {
-    console.log("[BRIDGE] Connecting to wss://eaglercraft.cc ...");
+async function startBrowser() {
+    console.log("[BRIDGE] Launching Chromium...");
 
-    ws = new WebSocket("wss://eaglercraft.cc", "eaglercraftX", {
-        headers: {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
-                          "AppleWebKit/537.36 (KHTML, like Gecko) " +
-                          "Chrome/124.0.0.0 Safari/537.36",
-            "Origin": "https://eaglercraft.cc"
-        }
+    browser = await puppeteer.launch({
+        headless: "new",
+        args: [
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--disable-software-rasterizer",
+
+            // ⭐ REQUIRED: allows WS binary frames in headless Chrome
+            "--disable-web-security",
+
+            // ⭐ REQUIRED: prevents Chrome from isolating WS origins
+            "--disable-site-isolation-trials",
+            "--disable-features=IsolateOrigins,site-per-process",
+
+            // ⭐ Prevents WebRTC from interfering with WS
+            "--disable-webrtc"
+        ]
     });
 
-    ws.binaryType = "arraybuffer";
+    console.log("[BRIDGE] Chromium launched");
 
-    ws.on("open", () => {
-        console.log("[BRIDGE] WS connected to eaglercraft.cc");
-    });
+    page = await browser.newPage();
+    console.log("[BRIDGE] New page created");
 
-    ws.on("message", (data) => {
-        const arr = data instanceof Buffer ? new Uint8Array(data) : new Uint8Array(data);
+    // Chrome → Node packet bridge
+    await page.exposeFunction("bridgeRecv", (msgArray) => {
+        const arr = Uint8Array.from(msgArray);
 
         let bin = "";
         for (let i = 0; i < arr.length; i++) {
@@ -56,36 +64,61 @@ function connectWS() {
         console.log("[BRIDGE] Packet from server | bytes:", arr.length);
     });
 
-    ws.on("close", (code) => {
-        console.log("[BRIDGE] WS closed | code:", code);
-        // optional: auto-reconnect
-        setTimeout(connectWS, 5000);
+    // -------------------------------
+    // Open WebSocket inside Chrome
+    // -------------------------------
+    await page.evaluate(() => {
+        console.log("[CHROME] Opening WebSocket to wss://eaglercraft.cc ...");
+
+        const ws = new WebSocket("wss://eaglercraft.cc", "eaglercraftX");
+        ws.binaryType = "arraybuffer";
+        window.ws = ws;
+
+        ws.onopen = () => {
+            console.log("[CHROME] WS connected");
+        };
+
+        ws.onmessage = (ev) => {
+            const arr = new Uint8Array(ev.data);
+            console.log("[CHROME] Incoming from server | bytes:", arr.length);
+            window.bridgeRecv([...arr]);
+        };
+
+        ws.onclose = (ev) => {
+            console.log("[CHROME] WS closed | code:", ev.code);
+        };
+
+        ws.onerror = (err) => {
+            console.log("[CHROME] WS error:", err);
+        };
     });
 
-    ws.on("error", (err) => {
-        console.log("[BRIDGE] WS error:", err.message);
-    });
+    console.log("[BRIDGE] Chrome WebSocket tunnel ready");
 }
 
-connectWS();
+startBrowser().catch(err => {
+    console.error("[BRIDGE] Failed to start browser:", err);
+});
 
 // -------------------------------
 // /send  (browser → server)
 // body: base64-encoded packet
 // -------------------------------
-app.post("/send", (req, res) => {
+app.post("/send", async (req, res) => {
     try {
-        if (!ws || ws.readyState !== WebSocket.OPEN) {
-            console.log("[BRIDGE] /send but WS not open");
-            return res.status(503).send("ws_not_open");
-        }
-
         const raw = Buffer.from(req.body, "base64");
         const arr = new Uint8Array(raw);
 
         console.log("[BRIDGE] /send packet | bytes:", arr.length);
 
-        ws.send(arr);
+        await page.evaluate((data) => {
+            if (window.ws && window.ws.readyState === WebSocket.OPEN) {
+                window.ws.send(new Uint8Array(data));
+            } else {
+                console.log("[CHROME] WS not open, dropping packet");
+            }
+        }, [...arr]);
+
         res.send("ok");
     } catch (e) {
         console.log("[BRIDGE] ERROR in /send:", e);
