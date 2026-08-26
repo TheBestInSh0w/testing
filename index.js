@@ -29,10 +29,8 @@ async function startBrowser() {
 
     // Expose function so Chrome can push packets to Node
     await page.exposeFunction("bridgeRecv", (msgArray) => {
-        // msgArray is a normal JS array from Chrome
         const arr = Uint8Array.from(msgArray);
 
-        // Convert binary → base64 safely
         let bin = "";
         for (let i = 0; i < arr.length; i++) {
             bin += String.fromCharCode(arr[i]);
@@ -43,10 +41,13 @@ async function startBrowser() {
         console.log("[BRIDGE] Packet received from Chrome | bytes:", arr.length);
     });
 
-    // Open WebSocket inside Chrome
+    // Open WebSocket inside Chrome WITH REQUIRED PROTOCOL
     await page.evaluate(() => {
         console.log("[BRIDGE] Opening WebSocket inside Chrome...");
-        window.ws = new WebSocket("wss://eaglercraft.cc");
+
+        // ⭐ REQUIRED FOR EAGLERCRAFT 1.12.2 ⭐
+        window.ws = new WebSocket("wss://eaglercraft.cc", "eaglercraftX");
+
         window.ws.binaryType = "arraybuffer";
 
         window.ws.onopen = () => {
@@ -55,8 +56,7 @@ async function startBrowser() {
 
         window.ws.onmessage = (ev) => {
             const arr = new Uint8Array(ev.data);
-            // Convert Uint8Array → normal array for Puppeteer
-            window.bridgeRecv([...arr]);
+            window.bridgeRecv([...arr]);  // Puppeteer-safe serialization
         };
 
         window.ws.onclose = (ev) => {
@@ -83,8 +83,7 @@ app.post("/send", async (req, res) => {
 
         await page.evaluate((data) => {
             window.ws.send(new Uint8Array(data));
-        }, [...arr]); // send as normal array so Puppeteer serializes correctly
-
+        }, [...arr]); // Puppeteer-safe
     } catch (e) {
         console.log("[BRIDGE] ERROR in /send:", e.message);
     }
